@@ -112,7 +112,7 @@ async def register(
 
     if existing:
         # Обновляем ключ (переподключение)
-        existing.session_key_enc    = encrypt_key(req.session_key_enc)
+        existing.session_key_enc    = encrypt_key(req.session_key_enc.get_secret_value())
         existing.session_expires_at = req.session_expires_at
         existing.voting_contract    = req.voting_contract or existing.voting_contract
         existing.is_active          = True
@@ -123,7 +123,7 @@ async def register(
     else:
         user = User(
             wallet_address      = wallet,
-            session_key_enc     = encrypt_key(req.session_key_enc),
+            session_key_enc     = encrypt_key(req.session_key_enc.get_secret_value()),
             session_expires_at  = req.session_expires_at,
             voting_contract     = req.voting_contract or settings.voting_contract,
             base_vote_second    = random.randint(0, 86399),

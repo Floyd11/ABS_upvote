@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, SecretStr
 import re
 
 
@@ -13,7 +13,7 @@ class RegisterRequest(BaseModel):
     Никакого AES-GCM на фронтенде — это вызвало бы двойное шифрование.
     """
     wallet_address: str
-    session_key_enc: str          # сырой hex: "0x" + 64 символа
+    session_key_enc: SecretStr          # Маскируем в логах
     session_expires_at: Optional[datetime] = None
     voting_contract: Optional[str] = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A"
 
@@ -24,10 +24,12 @@ class RegisterRequest(BaseModel):
             raise ValueError("Invalid Ethereum address")
         return v.lower()
 
-    @field_validator("session_key_enc")
+    @field_validator("session_key_enc", mode="before")
     @classmethod
-    def validate_session_key(cls, v: str) -> str:
+    def validate_session_key(cls, v: any) -> any:
         """Убеждаемся что это именно сырой hex-ключ, не зашифрованная строка."""
+        if not isinstance(v, str):
+            return v
         clean = v.removeprefix("0x").strip()
         if len(clean) != 64:
             raise ValueError(

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from sqlalchemy import (
     Integer, String, Boolean, DateTime, BigInteger,
@@ -79,7 +79,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     # Relations
@@ -97,7 +97,7 @@ class VoteLog(Base):
     app_id: Mapped[int] = mapped_column(Integer, nullable=False)
     epoch: Mapped[int] = mapped_column(Integer, nullable=False)
     tx_hash: Mapped[Optional[str]] = mapped_column(String(66))
-    voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     status: Mapped[str] = mapped_column(String(10), default="ok")  # ok | fail
     error_msg: Mapped[Optional[str]] = mapped_column(String)
 
