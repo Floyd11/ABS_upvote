@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+
+  # Node.js — отправляет AA-транзакции через @abstract-foundation/agw-client
+  tx-service:
+    build:
+      context: ./tx-service
+    container_name: upvote_tx_service
+    restart: unless-stopped
+    # Слушает только внутри Docker сети — не торчит наружу
+    expose:
+      - "3010"
+    env_file:
+      - ./tx-service/.env
+    networks:
+      - upvote_internal
+
+  # Python FastAPI — очереди, расписание, база, auth
+  backend:
+    build:
+      context: ./backend
+    container_name: upvote_backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Переопределяем URL на имя сервиса внутри Docker сети
+      TX_SERVICE_URL: http://tx-service:3010
+    depends_on:
+      - tx-service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # для PostgreSQL на хосте
+    networks:
+      - upvote_internal
+
+networks:
+  upvote_internal:
+    driver: bridge

@@ -1,0 +1,23 @@
+{
+  "name": "abstract-upvote-tx-service",
+  "version": "1.0.0",
+  "description": "Microservice for sending AA transactions via Abstract AGW session keys",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@abstract-foundation/agw-client": "^1.1.0",
+    "express": "^4.19.2",
+    "viem": "^2.21.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "ts-node": "^10.9.2"
+  }
+}
