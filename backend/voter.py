@@ -21,11 +21,8 @@ from crypto import decrypt_key
 
 logger = logging.getLogger(__name__)
 
-TX_SERVICE_URL    = "http://127.0.0.1:3010"
 TX_SERVICE_SECRET = settings.tx_service_secret   # shared secret между Python и Node
 REQUEST_TIMEOUT   = 400  # секунды — с запасом на нагрузку RPC (6 мин tx + overhead)
-
-VOTING_CONTRACT = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A"
 
 
 async def send_vote(
@@ -33,7 +30,7 @@ async def send_vote(
     session_key_enc: str,
     session_config: dict,
     app_id: int,
-    voting_contract: str = VOTING_CONTRACT,
+    voting_contract: str = settings.voting_contract,
 ) -> str:
     """
     Отправляет voteForApp(appId) через tx-service.

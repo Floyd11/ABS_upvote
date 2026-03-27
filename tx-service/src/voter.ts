@@ -25,6 +25,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, http, encodeFunctionData, Hex } from "viem";
 import { abstract } from "viem/chains";
+import { reviveBigInts } from "./utils.js";
 import type { VoteRequest } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -60,6 +61,9 @@ const DEFAULT_VOTING_CONTRACT =
 // ---------------------------------------------------------------------------
 
 export async function voteForApp(req: VoteRequest): Promise<string> {
+  // Ensure session config has BigInts (they were stringified in JSON)
+  const sessionConfig = reviveBigInts(req.sessionConfig);
+
   const {
     walletAddress,
     sessionPrivateKey,
@@ -79,7 +83,7 @@ export async function voteForApp(req: VoteRequest): Promise<string> {
   const sessionClient = createSessionClient({
     account: walletAddress as Hex,
     signer: sessionSigner,
-    session: req.sessionConfig, // needs to be added to VoteRequest type
+    session: sessionConfig,
     chain: abstract,
     transport: http(RPC_URL),
   });

@@ -76,7 +76,7 @@ async def get_nonce(wallet: str):
 @app.post("/auth/verify", response_model=TokenResponse)
 async def verify_login(req: VerifyRequest):
     """Шаг 2: проверить подпись и получить JWT."""
-    if not verify_signature(req.wallet_address, req.nonce, req.signature):
+    if not await verify_signature(req.wallet_address, req.nonce, req.signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
     token = create_jwt(req.wallet_address)
     return TokenResponse(access_token=token, wallet_address=req.wallet_address.lower())
@@ -136,12 +136,22 @@ async def register(
         await db.commit()
         await db.refresh(user)
 
+    # Calculate next vote time
+    now = datetime.now(timezone.utc)
+    now_s = now.hour * 3600 + now.minute * 60
+    delta = (user.base_vote_second - now_s) % 86400
+    next_vote_in_hours = round(delta / 3600, 1)
+
     week_queue = generate_week_queue(user.wallet_address, epoch)
     return RegisterResponse(
         wallet_address   = user.wallet_address,
+        is_active        = user.is_active,
         base_vote_second = user.base_vote_second,
         current_epoch    = epoch,
         week_queue       = week_queue,
+        total_votes      = user.total_votes,
+        streak_days      = user.streak_days,
+        next_vote_in_hours = next_vote_in_hours
     )
 
 

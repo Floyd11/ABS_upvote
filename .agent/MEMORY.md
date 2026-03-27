@@ -10,6 +10,7 @@
 - ✅ **Audit Complete**: 4 major improvements implemented (Project structure, Security hardening, Database migrations, Scheduler fixes).
 - ✅ **Infrastructure**: Docker Compose environment fully configured and launched.
 - ✅ **Frontend-Backend Integration**: Session key flow updated to include `session_config` for proper AGW signature generation.
+- ✅ **Stability**: Refined `BigInt` serialization for `tx-service` and fixed hardcoded constants in `voter.py`.
 
 ## Secrets & Config
 - `ENCRYPTION_KEY`: Fernet key for session keys stored in DB.

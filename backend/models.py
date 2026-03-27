@@ -45,9 +45,13 @@ class RegisterRequest(BaseModel):
 
 class RegisterResponse(BaseModel):
     wallet_address: str
+    is_active: bool
     base_vote_second: int
     current_epoch: int
     week_queue: List[int]
+    total_votes: int
+    streak_days: int
+    next_vote_in_hours: Optional[float] = None
 
 
 class StatusResponse(BaseModel):

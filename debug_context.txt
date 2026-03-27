@@ -1,0 +1,41 @@
+# Project: Abstract Upvote Bot - Debugging Context
+
+## 1. Project Overview
+An automated voting bot for the Abstract Ecosystem. It allows users to connect their Abstract Global Wallet (AGW), create a session key (Policy-based), and the bot will automatically vote for specified apps every epoch (week) using that session key.
+
+## 2. Architecture
+- **Frontend (Next.js):** React app using `@abstract-foundation/agw-react`. Handles Login (Privy/AGW), Session Creation, and History display.
+- **Backend (FastAPI/Python):** Manages user registration, session key storage (encrypted with Fernet), voting scheduler (APScheduler), and history.
+- **TX-Service (Node.js):** A small helper service using `@abstract-foundation/agw-client` to actually sign and send transactions using the session keys (since Python SDK support for AGW sessions is limited).
+- **Database (PostgreSQL):** Stores user data and vote logs.
+- **Infrastructure:** Nginx as a reverse proxy on VPS, DuckDNS for domain (absupvote.duckdns.org), SSL via Certbot.
+
+## 3. Current Issue: SIWE Login Failure
+**Symptoms:** 
+- User clicks "Connect Wallet".
+- Privy modal opens, user approves.
+- The UI briefly shows a loading state (Step 1/2).
+- Almost immediately, the app resets to the "Connect Wallet" screen (Log out occurs).
+
+**What we have already done:**
+1. **Frontend SIWE Logic:** The `handleSIWE` function is triggered automatically when `isConnected` and `address` are present. It gets a nonce from `/api/auth/nonce`, calls `agwClient.signMessage({ message })`, and sends it to `/api/auth/verify`.
+2. **Backend Auth (EIP-1271):** Since AGW is a Smart Contract Wallet, standard `ecrecover` (EOA) fails. We implemented `_verify_eip1271` in `backend/auth.py` which calls `staticcall` to the wallet contract on Abstract RPC to verify the signature.
+3. **Frontend Robustness:** Updated `useEffect` to wait for `agwClient` availability before starting SIWE.
+
+## 4. Possible Causes to Investigate
+- **EIP-1271 Verification Logic:** Check if `0x1626ba7e` (Magic Value) is correctly returned. The current implementation uses a manual `eth_call` construction. Maybe `eth-account` or another lib has a more robust way, or the AGW contract requires a specific format.
+- **JWT issues:** Check if the JWT is being correctly set in `localStorage` and sent in the `Authorization: Bearer` header for subsequent `/status` or `/history` calls.
+- **Error Handling:** The `catch` block in `handleSIWE` calls `logout()`. We need more descriptive errors in the UI to see if it's a "Signature Mismatch", "Network Error", or "Client Not Ready".
+- **Signature Message Format:** The SIWE message format in `backend/auth.py` must EXACTLY match what the frontend signs. Even a trailing newline or space can break it.
+- **Abstract Mainnet vs Testnet:** We are currently configured for Mainnet (`https://api.mainnet.abs.xyz`, Chain ID 2741). Ensure AGW is properly initialized for mainnet in `layout.tsx` and `page.tsx`.
+
+## 5. Files to Review
+- `frontend/src/app/page.tsx`: Main logic for login and session creation.
+- `backend/auth.py`: SIWE verification logic (EOA + EIP-1271).
+- `backend/main.py`: FastAPI routes for auth.
+- `backend/config.py`: Check RPC URLs and Chain IDs.
+
+## 6. Current State of Services
+- Domain: `https://absupvote.duckdns.org`
+- API Path: `/api/` (proxied to `localhost:8001`)
+- Docker containers: `upvote_db`, `upvote_tx_service`, `upvote_backend`, `upvote_frontend` are all RUNNING.
