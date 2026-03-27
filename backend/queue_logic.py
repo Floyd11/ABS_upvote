@@ -3,6 +3,37 @@ import time
 from typing import List
 
 from config import settings
+from datetime import datetime, timedelta, timezone
+
+VOTE_RESET_HOUR = 15  # UTC час смены дня/недели
+
+
+def current_vote_day_id() -> int:
+    """
+    Уникальный числовой ID текущего дня голосования.
+    День меняется в 15:00 UTC, не в полночь.
+    Если сейчас 14:59 UTC — это ещё вчерашний день голосования.
+    """
+    now = datetime.now(timezone.utc)
+    if now.hour < VOTE_RESET_HOUR:
+        effective = (now - timedelta(hours=VOTE_RESET_HOUR)).date()
+    else:
+        effective = now.date()
+    return effective.toordinal()
+
+
+def current_vote_week_id() -> int:
+    """
+    Уникальный числовой ID текущей недели голосования.
+    Неделя начинается в понедельник 15:00 UTC.
+    """
+    now = datetime.now(timezone.utc)
+    if now.weekday() == 0 and now.hour < VOTE_RESET_HOUR:
+        effective = now - timedelta(days=1)
+    else:
+        effective = now
+    iso = effective.isocalendar()
+    return iso[0] * 100 + iso[1]  # уникальный int, не сбивается на стыке годов
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +56,12 @@ APP_POOL: List[int] = [
     67,
     88,
     103,
+    # Новые (по запросу)
+    157,
+    173,
+    25,
+    198,
+    217,
 ]
 
 WEEK_SIZE = 7  # голосов в одну эпоху

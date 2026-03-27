@@ -10,6 +10,8 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
       POSTGRES_DB: upvote
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     networks:
       - upvote_internal
 
@@ -24,7 +26,7 @@ services:
     env_file:
       - ./tx-service/.env
     environment:
-      INTERNAL_SECRET: ce1db455f060cf2d3cc5e64a6768e4bacf6ec793cb3bf3fc9b88a978ddaaec7a
+      TX_SERVICE_SECRET: ce1db455f060cf2d3cc5e64a6768e4bacf6ec793cb3bf3fc9b88a978ddaaec7a
       RPC_URL: https://api.mainnet.abs.xyz
     networks:
       - upvote_internal
@@ -66,3 +68,6 @@ services:
 networks:
   upvote_internal:
     driver: bridge
+
+volumes:
+  pgdata:

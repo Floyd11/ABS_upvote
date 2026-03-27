@@ -39,6 +39,12 @@ async def send_vote(
     # Расшифровываем ключ из БД — tx-service получает сырой hex
     private_key = decrypt_key(session_key_enc)
 
+    if not session_config:
+        raise RuntimeError(
+            f"session_config is missing for wallet {wallet_address[:10]}. "
+            "User must re-authenticate and renew the bot session."
+        )
+
     logger.info(
         "Sending vote via tx-service: agw=%s app_id=%d",
         wallet_address[:10], app_id,

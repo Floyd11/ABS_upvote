@@ -29,8 +29,7 @@ export const VoteRequestSchema = z.object({
     .optional(),
 
   // Сессионный конфиг (policies, signer, expiresAt)
-  // Необходим для корректной упаковки транзакции AGW SDK
-  sessionConfig: z.any(),
+  sessionConfig: z.record(z.unknown()),
 });
 
 export type VoteRequest = z.infer<typeof VoteRequestSchema>;

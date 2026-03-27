@@ -11,6 +11,27 @@ import { LimitType } from "@abstract-foundation/agw-client/sessions";
 import { toFunctionSelector, Hex, parseEther } from "viem";
 import { abstract } from "viem/chains";
 
+interface BotStatus {
+  is_active: boolean;
+  total_votes: number;
+  streak_days: number;
+  next_vote_in_hours: number | null;
+  week_queue: number[];
+  week_app_index: number;
+  current_epoch: number;
+  today_app_id: number | null;
+  last_voted_at: string | null;
+}
+
+interface VoteLog {
+  app_id: number;
+  epoch: number;
+  tx_hash: string | null;
+  voted_at: string;
+  status: "ok" | "fail";
+  error_msg: string | null;
+}
+
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8001";
 const VOTING_CONTRACT = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A";
 
@@ -23,21 +44,35 @@ export default function Home() {
   const [jwt, setJwt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [siweError, setSiweError] = useState<string | null>(null);
-  const [status, setStatus] = useState<any>(null);
-  const [history, setHistory] = useState<any[]>([]);
+  const [status, setStatus] = useState<BotStatus | null>(null);
+  const [history, setHistory] = useState<VoteLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [activateError, setActivateError] = useState<string | null>(null);
 
   // Guard against double-execution of SIWE
   const siweRunning = useRef(false);
 
-  // Step 2: SIWE Flow (Automatic after connection)
+  // 1. Восстановление JWT из localStorage при перезагрузке страницы
   useEffect(() => {
-    if (isConnected && address && agwClient && step === 1 && !siweRunning.current) {
-      handleSIWE();
+    if (!isConnected) return;
+    const saved = localStorage.getItem("upvote_jwt");
+    if (saved) {
+      setJwt(saved);
+      setStep(3);
+      fetchStatus(saved);
+      fetchHistory(saved);
     }
-    // intentionally omit loading/siweRunning from deps — we use ref for that
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected, address, agwClient]);
+  }, [isConnected]);
+
+  // 2. Сброс состояния при дисконнекте
+  useEffect(() => {
+    if (!isConnected) {
+      setStep(1);
+      setJwt(null);
+      setSiweError(null);
+      siweRunning.current = false;
+    }
+  }, [isConnected]);
 
   async function handleSIWE() {
     if (!address || siweRunning.current) return;
@@ -167,22 +202,29 @@ export default function Home() {
         body: JSON.stringify({
           wallet_address: address,
           session_key_enc: sessionPrivateKey, // raw hex, encrypted on backend
-          session_config: session,            // session object from agwClient.createSession
+          session_config: session,
           session_expires_at: new Date(Date.now() + 60 * 60 * 24 * 60 * 1000).toISOString(),
           voting_contract: VOTING_CONTRACT
-        }, (key, value) => typeof value === 'bigint' ? value.toString() : value)
+        }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value)
       });
 
-      if (!regResp.ok) throw new Error("Registration failed");
+      if (!regResp.ok) {
+        const errorData = await regResp.json().catch(() => ({}));
+        const detail = errorData.detail 
+          ? (typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail))
+          : "Registration failed";
+        throw new Error(detail);
+      }
 
       const regData = await regResp.json();
       setStatus(regData);
-      alert("Bot activated successfully!");
-      fetchHistory(jwt);
+      setActivateError(null);
+      await fetchStatus(jwt);
+      await fetchHistory(jwt);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Activation error:", err);
-      alert("Failed to activate bot. Check console for details.");
+      setActivateError(err?.message ?? "Activation failed. Check console for details.");
     } finally {
       setLoading(false);
     }
@@ -213,6 +255,14 @@ export default function Home() {
               <button className="btn" onClick={handleActivate} disabled={loading}>
                 {loading ? <div className="loader" /> : (status?.is_active ? "Renew Session" : "Activate Bot")}
               </button>
+              {activateError && (
+                <p style={{
+                  color: '#ff4f4f', fontSize: '0.8rem', textAlign: 'center',
+                  wordBreak: 'break-word', marginTop: '0.5rem'
+                }}>
+                  ⚠️ {activateError}
+                </p>
+              )}
 
               {status && (
                 <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '1rem', width: '100%', textAlign: 'center' }}>
@@ -220,19 +270,28 @@ export default function Home() {
                     <span>Total Votes: <strong>{status.total_votes}</strong></span>
                     <span>Streak: <strong>{status.streak_days} days</strong></span>
                   </div>
-                  {status.next_vote_in_hours && (
+                  {status.next_vote_in_hours !== null && (
                     <div style={{ opacity: 0.7 }}>Next vote in ~{status.next_vote_in_hours}h</div>
                   )}
                 </div>
               )}
             </>
-          ) : siweError ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', width: '100%' }}>
-              <p style={{ color: '#ff4f4f', fontSize: '0.8rem', textAlign: 'center', wordBreak: 'break-word' }}>
-                ⚠️ {siweError}
+          ) : step === 1 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', width: '100%' }}>
+              <p style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
+                Connected: {address?.slice(0, 6)}...{address?.slice(-4)}
               </p>
-              <button className="btn" onClick={() => { siweRunning.current = false; setSiweError(null); handleSIWE(); }}>
-                Retry Sign-In
+              {siweError && (
+                <p style={{ color: '#ff4f4f', fontSize: '0.8rem', textAlign: 'center', wordBreak: 'break-word' }}>
+                  ⚠️ {siweError}
+                </p>
+              )}
+              <button
+                className="btn"
+                onClick={() => { siweRunning.current = false; setSiweError(null); handleSIWE(); }}
+                disabled={loading}
+              >
+                {loading ? <div className="loader" /> : "Sign In with Wallet"}
               </button>
             </div>
           ) : (
@@ -253,14 +312,31 @@ export default function Home() {
                 <div style={{ textAlign: 'center', opacity: 0.4, padding: '1rem' }}>No votes yet.</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  {history.map((log: any, i: number) => (
+                  {history.map((log: VoteLog, i: number) => (
                     <div key={i} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #111', paddingBottom: '0.5rem' }}>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span>App ID #{log.app_id}</span>
                         <span style={{ fontSize: '0.7rem', opacity: 0.5 }}>{new Date(log.voted_at).toLocaleString()}</span>
                       </div>
-                      <div style={{ color: log.status === 'ok' ? '#00ff88' : '#ff4444' }}>
-                        {log.status === 'ok' ? '✓ Success' : '✗ Failed'}
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                        <div style={{ color: log.status === 'ok' ? '#00ff88' : '#ff4444' }}>
+                          {log.status === 'ok' ? '✓ Success' : '✗ Failed'}
+                        </div>
+                        {log.status === 'ok' && log.tx_hash && (
+                          <a
+                            href={`https://abscan.org/tx/${log.tx_hash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ fontSize: '0.65rem', opacity: 0.5, color: '#888' }}
+                          >
+                            {log.tx_hash.slice(0, 8)}...
+                          </a>
+                        )}
+                        {log.status === 'fail' && log.error_msg && (
+                          <div style={{ fontSize: '0.65rem', color: '#ff4444', opacity: 0.7, maxWidth: '180px', textAlign: 'right', wordBreak: 'break-word' }}>
+                            {log.error_msg.slice(0, 80)}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -272,7 +348,17 @@ export default function Home() {
 
         {isConnected && (
           <button
-            onClick={() => { logout(); setStep(1); setJwt(null); setHistory([]); setSiweError(null); siweRunning.current = false; }}
+            onClick={() => {
+              logout();
+              localStorage.removeItem("upvote_jwt");
+              setStep(1);
+              setJwt(null);
+              setStatus(null);
+              setHistory([]);
+              setSiweError(null);
+              setActivateError(null);
+              siweRunning.current = false;
+            }}
             className="status-badge"
             style={{ border: 'none', cursor: 'pointer', marginTop: '1rem', opacity: 0.5 }}
           >

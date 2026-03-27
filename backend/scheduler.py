@@ -1,215 +1,248 @@
 import asyncio
 import logging
 import random
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
 from config import settings
 from db import AsyncSessionLocal, User, VoteLog
-from queue_logic import current_epoch, get_app_id_for_today, WEEK_SIZE
+from queue_logic import (
+    current_epoch, get_app_id_for_today, WEEK_SIZE,
+    current_vote_day_id, current_vote_week_id, VOTE_RESET_HOUR,
+)
 from voter import send_vote
 
 logger = logging.getLogger(__name__)
-
 scheduler = AsyncIOScheduler(timezone=settings.scheduler_timezone)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _vote_target_second(user: User, for_date: date) -> int:
+def _vote_target_minute(user: User) -> int:
     """
-    Целевая секунда суток (UTC) для голосования.
-    Jitter детерминирован по дате — стабилен в течение дня, меняется каждый день.
+    Целевая минута суток (0..1439) для голосования этого пользователя.
+    Jitter детерминирован по vote_day_id — меняется каждый день-окно, не по полуночи.
     """
-    day_seed = int(user.wallet_address, 16) ^ (for_date.toordinal() * 0xCAFE)
+    day_seed = int(user.wallet_address, 16) ^ (current_vote_day_id() * 0xCAFE)
     rng = random.Random(day_seed)
-    jitter = rng.randint(-1800, 1800)  # ±30 минут
-    return (user.base_vote_second + jitter) % 86400
+    jitter_minutes = rng.randint(-30, 30)
+    base_minute = (user.base_vote_second // 60) % 1440
+    return (base_minute + jitter_minutes) % 1440
 
 
-def _is_vote_time(user: User, now_second: int, now_date: date) -> bool:
+def _already_voted_this_window(user: User) -> bool:
     """
-    Сравниваем текущую МИНУТУ суток (0..1439) с целевой минутой.
-
-    FIX (критический): предыдущая реализация с окном diff < 60 срабатывала
-    на ДВА соседних тика — target=3630: тик на 3600 даёт diff=30, тик на
-    3660 тоже даёт diff=30. Это создавало дублирующие таски с nonce collision.
-
-    Сравнение по минутам гарантирует ровно один тик на одно голосование.
-    Перенос через полночь решается автоматически.
-    """
-    target = _vote_target_second(user, now_date)
-    return (target // 60) == (now_second // 60)
-
-
-def _already_voted_today(user: User, now_utc: datetime) -> bool:
-    """
-    Проверяем, было ли уже голосование в текущем 'логическом дне' (15:00 - 15:00 UTC).
+    Проверяем голосовал ли пользователь в текущем окне 15:00-15:00 UTC.
+    Заменяет старый _already_voted_today который проверял по календарной дате.
     """
     if user.last_voted_at is None:
         return False
-    
-    # Сдвигаем время на 15 часов назад: 15:00 UTC становится 00:00 'логического дня'
-    logic_now_date = (now_utc - timedelta(hours=15)).date()
-    voted_at_utc = user.last_voted_at.astimezone(timezone.utc)
-    logic_voted_date = (voted_at_utc - timedelta(hours=15)).date()
-    
-    return logic_voted_date == logic_now_date
+    from datetime import timedelta
+    voted_at = user.last_voted_at.astimezone(timezone.utc)
+    if voted_at.hour < VOTE_RESET_HOUR:
+        voted_day = (voted_at - timedelta(hours=VOTE_RESET_HOUR)).date().toordinal()
+    else:
+        voted_day = voted_at.date().toordinal()
+    return voted_day == current_vote_day_id()
 
 
-# ---------------------------------------------------------------------------
-# Per-user vote with retry
-# ---------------------------------------------------------------------------
-
-async def _attempt_vote(user_id: int) -> bool:
-    """Одна попытка проголосовать. Возвращает True при успехе."""
+async def _attempt_vote(user_id: int, app_id_override: int | None = None) -> bool:
     async with AsyncSessionLocal() as db:
         user = await db.get(User, user_id)
         if not user or not user.is_active:
             return False
 
-        epoch = current_epoch()
-
-        # Смена эпохи
-        if user.current_epoch != epoch:
-            logger.info("New epoch %d for agw=%s", epoch, user.wallet_address[:10])
-            user.current_epoch = epoch
+        vote_week = current_vote_week_id()
+        if user.current_epoch != vote_week:
+            logger.info(
+                "New vote week %d for agw=%s (was %d)",
+                vote_week, user.wallet_address[:10], user.current_epoch,
+            )
+            user.current_epoch = vote_week
             user.week_app_index = 0
 
-        queue = generate_week_queue(user.wallet_address, epoch)
+        if user.week_app_index >= WEEK_SIZE:
+            logger.debug("Week complete: agw=%s", user.wallet_address[:10])
+            return False
 
-        while user.week_app_index < len(queue):
-            app_id = queue[user.week_app_index]
-            
-            # Лог для отладки
-            vote_log = VoteLog(
-                user_id=user.id,
+        if _already_voted_this_window(user):
+            return False
+
+        contract_epoch = current_epoch()
+        if app_id_override is not None:
+            app_id = app_id_override
+        else:
+            app_id = get_app_id_for_today(user.wallet_address, contract_epoch, user.week_app_index)
+
+        vote_log = VoteLog(
+            user_id=user.id,
+            app_id=app_id,
+            epoch=contract_epoch,
+            voted_at=datetime.now(timezone.utc),
+        )
+
+        try:
+            tx_hash = await send_vote(
+                wallet_address=user.wallet_address,
+                session_key_enc=user.session_key_enc,
+                session_config=user.session_config_json,
                 app_id=app_id,
-                epoch=epoch,
-                voted_at=datetime.now(timezone.utc),
+                voting_contract=user.voting_contract,
             )
+            vote_log.tx_hash = tx_hash
+            vote_log.status  = "ok"
+            user.last_voted_at  = datetime.now(timezone.utc)
+            user.week_app_index += 1
+            user.total_votes    += 1
+            user.streak_days    += 1
+            logger.info(
+                "✓ Voted: agw=%s app_id=%d week=%d tx=%s",
+                user.wallet_address[:10], app_id, vote_week, tx_hash[:22],
+            )
+            db.add(vote_log)
+            db.add(user)
+            await db.commit()
+            return True
 
-            try:
-                tx_hash = await send_vote(
-                    wallet_address=user.wallet_address,
-                    session_key_enc=user.session_key_enc,
-                    session_config=user.session_config_json,
-                    app_id=app_id,
-                    voting_contract=user.voting_contract,
-                )
-                vote_log.tx_hash = tx_hash
-                vote_log.status  = "ok"
-
-                user.last_voted_at  = datetime.now(timezone.utc)
-                user.week_app_index += 1
-                user.total_votes    += 1
-                user.streak_days    += 1
-
-                logger.info(
-                    "✓ Successful vote for today: agw=%s app_id=%d tx=%s",
-                    user.wallet_address[:10], app_id, tx_hash[:22],
-                )
-                db.add(vote_log)
-                db.add(user)
-                await db.commit()
-                return True # УСПЕХ: Мы проголосовали один раз сегодня, выходим.
-
-            except Exception as e:
-                err_str = str(e).lower()
-                # Если транзакция отклонена блокчейном
-                if "revert" in err_str:
-                    logger.warning(
-                        "! App %d REVERTED for agw=%s. Skipping to next in queue.",
-                        app_id, user.wallet_address[:10]
-                    )
-                    vote_log.status = "skip"
-                    vote_log.error_msg = f"Reverted/Already voted: {err_str[:100]}"
-                    db.add(vote_log)
-                    user.week_app_index += 1
-                    db.add(user)
-                    await db.commit()
-                    # ПРОДОЛЖАЕМ цикл: ищем следующее приложение, пока не наступит успех
-                    continue
-                else:
-                    # Другая ошибка (RPC, сеть и т.д.) 
-                    # Не увеличиваем индекс, просто записываем фейл и выходим на глобальный retry
-                    vote_log.status    = "fail"
-                    vote_log.error_msg = str(e)[:500]
-                    db.add(vote_log)
-                    await db.commit()
-                    raise e
-        
-        logger.error("!!! No more apps in pool to vote for agw=%s in epoch %d", user.wallet_address[:10], epoch)
-        return False
+        except Exception as e:
+            vote_log.status    = "fail"
+            vote_log.error_msg = str(e)[:500]
+            logger.error("✗ Vote failed: agw=%s app_id=%d error=%s",
+                         user.wallet_address[:10], app_id, e)
+            db.add(vote_log)
+            db.add(user)
+            await db.commit()
+            return False
 
 
-async def _vote_for_user(user_id: int):
+async def _vote_for_user(user_id: int, is_catchup: bool = False):
     """
-    Полный цикл для одного пользователя с retry.
-
-    FIX (аудит п.4): sleep живёт ЗДЕСЬ, не в _tick.
-    FIX (аудит п.5): до 3 попыток, повтор через 15-30 минут.
+    Ежедневный цикл голосования с умным retry.
+    При неудаче переходим к СЛЕДУЮЩЕМУ appId из очереди — не повторяем тот же.
+    Максимум 3 попытки с разными appId за один день.
+    Логика ежедневного запуска из _tick НЕ меняется.
     """
-    # Первая попытка — человеческая задержка 15-45 сек
-    await asyncio.sleep(random.randint(15, 45))
+    initial_delay = random.randint(5, 15) if is_catchup else random.randint(15, 45)
+    await asyncio.sleep(initial_delay)
 
     for attempt in range(3):
-        success = await _attempt_vote(user_id)
+        # Читаем свежее состояние пользователя перед каждой попыткой
+        async with AsyncSessionLocal() as db:
+            user = await db.get(User, user_id)
+            if not user or not user.is_active:
+                return
+
+            vote_week = current_vote_week_id()
+            contract_epoch = current_epoch()
+
+            # Смена недели — сбрасываем индекс
+            if user.current_epoch != vote_week:
+                user.current_epoch = vote_week
+                user.week_app_index = 0
+                db.add(user)
+                await db.commit()
+
+            # Все appId этой недели исчерпаны
+            if user.week_app_index >= WEEK_SIZE:
+                logger.debug("Week complete: agw=%s", user.wallet_address[:10])
+                return
+
+            # Уже проголосовали сегодня
+            if _already_voted_this_window(user):
+                logger.debug("Already voted this window: agw=%s", user.wallet_address[:10])
+                return
+
+            # Берём appId для текущего индекса
+            app_id = get_app_id_for_today(
+                user.wallet_address, contract_epoch, user.week_app_index
+            )
+            current_index = user.week_app_index
+
+        logger.info(
+            "Attempt %d/3: agw=%s app_id=%d index=%d",
+            attempt + 1, user.wallet_address[:10], app_id, current_index,
+        )
+
+        success = await _attempt_vote(user_id, app_id_override=app_id)
+
         if success:
             return
-        if attempt < 2:
-            retry_delay = random.randint(900, 1800)  # 15-30 мин
-            logger.info("Retry %d/2 for user_id=%d in %ds", attempt + 1, user_id, retry_delay)
-            await asyncio.sleep(retry_delay)
 
+        # Попытка не удалась — пропускаем этот appId, берём следующий завтра
+        async with AsyncSessionLocal() as db:
+            user = await db.get(User, user_id)
+            if user and user.week_app_index < WEEK_SIZE:
+                user.week_app_index += 1
+                db.add(user)
+                await db.commit()
+                logger.warning(
+                    "Skipped app_id=%d (attempt %d/3 failed), "
+                    "next index=%d: agw=%s",
+                    app_id, attempt + 1,
+                    user.week_app_index, user.wallet_address[:10],
+                )
 
-# ---------------------------------------------------------------------------
-# Main tick — каждую минуту
-# ---------------------------------------------------------------------------
+        # Если все 3 попытки исчерпаны
+        if attempt == 2:
+            logger.error(
+                "All 3 attempts failed today for agw=%s, "
+                "no vote recorded this window",
+                user.wallet_address[:10],
+            )
+            return
 
-def _is_due_to_vote(u: User, now_utc: datetime) -> bool:
-    """Проверяет, пришло ли время голосовать для юзера."""
-    # Сдвигаем время на 15 часов чтобы проверить "уже голосовали ли мы в этом логическом цикле"
-    if _already_voted_today(u, now_utc):
-        return False
-    
-    now_second = now_utc.hour * 3600 + now_utc.minute * 60 + now_utc.second
-    return _is_vote_time(u, now_second, now_utc.date())
+        # Пауза перед следующей попыткой с другим appId
+        retry_delay = random.randint(30, 90)
+        logger.info(
+            "Trying next app_id in %ds (attempt %d/3 next)",
+            retry_delay, attempt + 2,
+        )
+        await asyncio.sleep(retry_delay)
 
 
 async def _tick():
-    """
-    FIX (аудит п.4): _tick НЕ спит. Просто запускает таски и уходит.
-    """
-    now_utc = datetime.now(timezone.utc)
+    now_utc    = datetime.now(timezone.utc)
+    now_minute = now_utc.hour * 60 + now_utc.minute  # 0..1439
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).where(User.is_active == True))
         users = result.scalars().all()
 
+    # Основной список: пришло запланированное время голосования
     due = [
         u for u in users
-        if _is_due_to_vote(u, now_utc)
+        if (_vote_target_minute(u) == now_minute)
+        and not _already_voted_this_window(u)
     ]
 
-    if not due:
-        return
+    # Catch-up: пользователь зарегистрировался менее 60 минут назад и ещё не голосовал.
+    # Запускаем каждый тик — _attempt_vote сам не даст дублей через _already_voted_this_window.
+    catchup_ids = set(u.id for u in due)
+    catchup = []
+    for u in users:
+        if u.id in catchup_ids:
+            continue
+        if _already_voted_this_window(u):
+            continue
+        if u.created_at is None:
+            continue
+        created_ago_minutes = (now_utc - u.created_at.astimezone(timezone.utc)).total_seconds() / 60
+        if 0 <= created_ago_minutes <= 60:
+            catchup.append(u)
 
-    logger.info("Tick: %d users due to vote", len(due))
+    if due:
+        logger.info("Tick: %d users due to vote (scheduled)", len(due))
+    if catchup:
+        logger.info("Tick: %d users catch-up (registered today)", len(catchup))
+
     random.shuffle(due)
-
-    # Запускаем без блокировки — каждая таска спит сама
     for user in due:
-        asyncio.create_task(_vote_for_user(user.id))
+        asyncio.create_task(_vote_for_user(user.id, is_catchup=False))
 
+    random.shuffle(catchup)
+    for user in catchup:
+        asyncio.create_task(_vote_for_user(user.id, is_catchup=True))
 
-# ---------------------------------------------------------------------------
-# Start / Stop
-# ---------------------------------------------------------------------------
 
 def start_scheduler():
     scheduler.add_job(
