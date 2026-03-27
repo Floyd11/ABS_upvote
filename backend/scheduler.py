@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import random
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -46,14 +46,19 @@ def _is_vote_time(user: User, now_second: int, now_date: date) -> bool:
     return (target // 60) == (now_second // 60)
 
 
-def _already_voted_today(user: User, now_date: date) -> bool:
+def _already_voted_today(user: User, now_utc: datetime) -> bool:
     """
-    FIX: принимаем now_date явно — нет расхождения между вызовами в одном тике.
+    Проверяем, было ли уже голосование в текущем 'логическом дне' (15:00 - 15:00 UTC).
     """
     if user.last_voted_at is None:
         return False
-    voted_date = user.last_voted_at.astimezone(timezone.utc).date()
-    return voted_date == now_date
+    
+    # Сдвигаем время на 15 часов назад: 15:00 UTC становится 00:00 'логического дня'
+    logic_now_date = (now_utc - timedelta(hours=15)).date()
+    voted_at_utc = user.last_voted_at.astimezone(timezone.utc)
+    logic_voted_date = (voted_at_utc - timedelta(hours=15)).date()
+    
+    return logic_voted_date == logic_now_date
 
 
 # ---------------------------------------------------------------------------
@@ -75,59 +80,71 @@ async def _attempt_vote(user_id: int) -> bool:
             user.current_epoch = epoch
             user.week_app_index = 0
 
-        if user.week_app_index >= WEEK_SIZE:
-            return False
+        queue = generate_week_queue(user.wallet_address, epoch)
 
-        # Перепроверяем — параллельная таска могла уже проголосовать
-        today = datetime.now(timezone.utc).date()
-        if _already_voted_today(user, today):
-            return False
-
-        app_id = get_app_id_for_today(user.wallet_address, epoch, user.week_app_index)
-
-        vote_log = VoteLog(
-            user_id=user.id,
-            app_id=app_id,
-            epoch=epoch,
-            voted_at=datetime.now(timezone.utc),
-        )
-
-        try:
-            tx_hash = await send_vote(
-                wallet_address=user.wallet_address,
-                session_key_enc=user.session_key_enc,
-                session_config=user.session_config_json,
+        while user.week_app_index < len(queue):
+            app_id = queue[user.week_app_index]
+            
+            # Лог для отладки
+            vote_log = VoteLog(
+                user_id=user.id,
                 app_id=app_id,
-                voting_contract=user.voting_contract,
+                epoch=epoch,
+                voted_at=datetime.now(timezone.utc),
             )
-            vote_log.tx_hash = tx_hash
-            vote_log.status  = "ok"
 
-            user.last_voted_at  = datetime.now(timezone.utc)
-            user.week_app_index += 1
-            user.total_votes    += 1
-            user.streak_days    += 1
+            try:
+                tx_hash = await send_vote(
+                    wallet_address=user.wallet_address,
+                    session_key_enc=user.session_key_enc,
+                    session_config=user.session_config_json,
+                    app_id=app_id,
+                    voting_contract=user.voting_contract,
+                )
+                vote_log.tx_hash = tx_hash
+                vote_log.status  = "ok"
 
-            logger.info(
-                "✓ Voted: agw=%s app_id=%d epoch=%d tx=%s",
-                user.wallet_address[:10], app_id, epoch, tx_hash[:22],
-            )
-            db.add(vote_log)
-            db.add(user)
-            await db.commit()
-            return True
+                user.last_voted_at  = datetime.now(timezone.utc)
+                user.week_app_index += 1
+                user.total_votes    += 1
+                user.streak_days    += 1
 
-        except Exception as e:
-            vote_log.status    = "fail"
-            vote_log.error_msg = str(e)[:500]
-            logger.error(
-                "✗ Vote failed: agw=%s app_id=%d error=%s",
-                user.wallet_address[:10], app_id, e,
-            )
-            db.add(vote_log)
-            db.add(user)
-            await db.commit()
-            return False
+                logger.info(
+                    "✓ Successful vote for today: agw=%s app_id=%d tx=%s",
+                    user.wallet_address[:10], app_id, tx_hash[:22],
+                )
+                db.add(vote_log)
+                db.add(user)
+                await db.commit()
+                return True # УСПЕХ: Мы проголосовали один раз сегодня, выходим.
+
+            except Exception as e:
+                err_str = str(e).lower()
+                # Если транзакция отклонена блокчейном
+                if "revert" in err_str:
+                    logger.warning(
+                        "! App %d REVERTED for agw=%s. Skipping to next in queue.",
+                        app_id, user.wallet_address[:10]
+                    )
+                    vote_log.status = "skip"
+                    vote_log.error_msg = f"Reverted/Already voted: {err_str[:100]}"
+                    db.add(vote_log)
+                    user.week_app_index += 1
+                    db.add(user)
+                    await db.commit()
+                    # ПРОДОЛЖАЕМ цикл: ищем следующее приложение, пока не наступит успех
+                    continue
+                else:
+                    # Другая ошибка (RPC, сеть и т.д.) 
+                    # Не увеличиваем индекс, просто записываем фейл и выходим на глобальный retry
+                    vote_log.status    = "fail"
+                    vote_log.error_msg = str(e)[:500]
+                    db.add(vote_log)
+                    await db.commit()
+                    raise e
+        
+        logger.error("!!! No more apps in pool to vote for agw=%s in epoch %d", user.wallet_address[:10], epoch)
+        return False
 
 
 async def _vote_for_user(user_id: int):
@@ -154,14 +171,21 @@ async def _vote_for_user(user_id: int):
 # Main tick — каждую минуту
 # ---------------------------------------------------------------------------
 
+def _is_due_to_vote(u: User, now_utc: datetime) -> bool:
+    """Проверяет, пришло ли время голосовать для юзера."""
+    # Сдвигаем время на 15 часов чтобы проверить "уже голосовали ли мы в этом логическом цикле"
+    if _already_voted_today(u, now_utc):
+        return False
+    
+    now_second = now_utc.hour * 3600 + now_utc.minute * 60 + now_utc.second
+    return _is_vote_time(u, now_second, now_utc.date())
+
+
 async def _tick():
     """
     FIX (аудит п.4): _tick НЕ спит. Просто запускает таски и уходит.
-    max_instances=1 нужен только чтобы не накапливать тики при зависшем RPC.
     """
-    now_utc    = datetime.now(timezone.utc)
-    now_second = now_utc.hour * 3600 + now_utc.minute * 60 + now_utc.second
-    now_date   = now_utc.date()
+    now_utc = datetime.now(timezone.utc)
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).where(User.is_active == True))
@@ -169,8 +193,7 @@ async def _tick():
 
     due = [
         u for u in users
-        if _is_vote_time(u, now_second, now_date)
-        and not _already_voted_today(u, now_date)
+        if _is_due_to_vote(u, now_utc)
     ]
 
     if not due:

@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     voting_contract: str = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A"
     chain_id: int = 2741
 
-    # Epoch
-    epoch_zero_timestamp: int = 1730421821
+    # Epoch (Monday 15:00 UTC)
+    epoch_zero_timestamp: int = 1735570800
     epoch_duration_seconds: int = 604800
 
     # API & Auth

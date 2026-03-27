@@ -55,24 +55,16 @@ def seconds_until_next_epoch() -> int:
 
 def generate_week_queue(wallet_address: str, epoch: int) -> List[int]:
     """
-    Генерируем список из WEEK_SIZE уникальных appId для конкретного кошелька
-    на конкретную эпоху.
-
-    Ключевые свойства:
-    1. Детерминированный для той же пары (wallet, epoch) — если бэкенд
-       перезапустится, очередь пересоздастся идентично.
-    2. Разные кошельки получают разный порядок — защита от паттерна.
-    3. Пул достаточно большой чтобы выбрать 7 уникальных appId.
+    Генерируем перемешанный список ВСЕХ appId из пула для конкретного кошелька.
+    Это дает нам запас для скипов, если за какие-то приложения уже голосовали.
     """
-    if len(APP_POOL) < WEEK_SIZE:
-        raise ValueError(f"APP_POOL содержит меньше {WEEK_SIZE} элементов")
-
-    # Seed = кошелёк + эпоха → каждый кошелёк получает свой уникальный порядок
-    # Строковый seed надёжнее XOR: учитывает все 160 бит адреса, не только младшие 32
+    # Seed = кошелёк + эпоха
     seed_str = f"{wallet_address.lower()}_{epoch}"
     rng = random.Random(seed_str)
 
-    queue = rng.sample(APP_POOL, WEEK_SIZE)
+    # Копируем весь пул и перемешиваем его
+    queue = list(APP_POOL)
+    rng.shuffle(queue)
     return queue
 
 
