@@ -163,33 +163,36 @@ export default function Home() {
       const sessionPrivateKey = generatePrivateKey();
       const sessionSigner = privateKeyToAccount(sessionPrivateKey);
 
-      // 2. Create Session on Abstract
-      const { session } = await agwClient.createSession({
+      // 2. Create Session Configuration
+      const sessionConfig = {
+        signer: sessionSigner.address,
+        expiresAt: BigInt(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 60), // 60 days
+        feeLimit: {
+          limitType: LimitType.Lifetime,
+          limit: parseEther("0.01"), // Max 0.01 ETH in fees per session (~60 days, required by mainnet registry)
+          period: BigInt(0),
+        },
+        callPolicies: [
+          {
+            target: VOTING_CONTRACT as `0x${string}`,
+            selector: toFunctionSelector("voteForApp(uint256)"),
+            valueLimit: {
+              limitType: LimitType.Unlimited,
+              limit: BigInt(0),
+              period: BigInt(0),
+            },
+            maxValuePerUse: BigInt(0),
+            constraints: [],
+          },
+        ],
+        transferPolicies: [],
+      };
+
+      // 2.5 Create Session onchain
+      await agwClient.createSession({
         chain: abstract,
         account: address as Hex,
-        session: {
-          signer: sessionSigner.address,
-          expiresAt: BigInt(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 60), // 60 days
-          feeLimit: {
-            limitType: LimitType.Lifetime,
-            limit: parseEther("0.01"), // Max 0.01 ETH in fees per session (~60 days, required by mainnet registry)
-            period: BigInt(0),
-          },
-          callPolicies: [
-            {
-              target: VOTING_CONTRACT,
-              selector: toFunctionSelector("voteForApp(uint256)"),
-              valueLimit: {
-                limitType: LimitType.Unlimited,
-                limit: BigInt(0),
-                period: BigInt(0),
-              },
-              maxValuePerUse: BigInt(0),
-              constraints: [],
-            },
-          ],
-          transferPolicies: [],
-        },
+        session: sessionConfig,
       });
 
       // 3. Send raw private key to backend
@@ -202,7 +205,7 @@ export default function Home() {
         body: JSON.stringify({
           wallet_address: address,
           session_key_enc: sessionPrivateKey, // raw hex, encrypted on backend
-          session_config: session,
+          session_config: sessionConfig,
           session_expires_at: new Date(Date.now() + 60 * 60 * 24 * 60 * 1000).toISOString(),
           voting_contract: VOTING_CONTRACT
         }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value)

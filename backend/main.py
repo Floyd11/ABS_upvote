@@ -62,14 +62,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_request_body(request: Request, call_next):
+    if request.url.path == "/register" and request.method == "POST":
+        body_bytes = await request.body()
+        print("======== RAW BODY ========", flush=True)
+        print(body_bytes.decode('utf-8', errors='replace'), flush=True)
+        print("==========================", flush=True)
+        async def receive():
+            return {"type": "http.request", "body": body_bytes}
+        request._receive = receive
+    
+    response = await call_next(request)
+    
+    if request.url.path == "/register" and response.status_code == 422:
+        print(f"!!! RESPONSE RETURNED 422 !!!", flush=True)
+    return response
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Логируем подробности 422 ошибки для дебага."""
-    logger.error("Validation error for %s %s: %s", request.method, request.url, exc.errors())
+    errs = exc.errors()
+    body = exc.body
+    print(f"\\n!!! VALIDATION ERROR 422 for {request.method} {request.url} !!!", flush=True)
+    print(f"Errors: {errs}", flush=True)
+    print(f"Body: {body}\\n", flush=True)
+    logger.error("Validation error for %s %s: %s\\nBody: %s", request.method, request.url, errs, body)
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": exc.body},
+        content={"detail": errs, "body": body},
     )
 
 
