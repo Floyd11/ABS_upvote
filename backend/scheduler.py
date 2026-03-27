@@ -8,6 +8,8 @@ from sqlalchemy import select
 
 from config import settings
 from db import AsyncSessionLocal, User, VoteLog
+from crypto import decrypt_raw
+import gigaverse as gv
 from queue_logic import (
     current_epoch, get_app_id_for_today, WEEK_SIZE,
     current_vote_day_id, current_vote_week_id, VOTE_RESET_HOUR,
@@ -253,6 +255,14 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        _gigaverse_tick,
+        trigger="cron",
+        second=30,  # offset from vote_tick to spread DB load
+        id="gigaverse_tick",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.start()
     logger.info("Scheduler started")
 
@@ -260,3 +270,89 @@ def start_scheduler():
 def stop_scheduler():
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")
+
+
+# ---------------------------------------------------------------------------
+# Gigaverse scheduler tasks
+# ---------------------------------------------------------------------------
+
+async def _run_gigaverse(user_id: int) -> None:
+    """
+    Execute one Gigaverse dungeon run for the given user.
+    Updates gigaverse_last_run on success; logs and skips on failure.
+    """
+    async with AsyncSessionLocal() as db:
+        user = await db.get(User, user_id)
+        if not user or not user.gigaverse_jwt_enc:
+            return
+        jwt = decrypt_raw(user.gigaverse_jwt_enc)
+        wallet = user.wallet_address
+
+    try:
+        result = await gv.run_dungeon(wallet, jwt)
+        status = result.get("result", "unknown")
+
+        # Only advance last_run if the run actually executed (not skipped due to energy)
+        if status != "skipped_low_energy":
+            async with AsyncSessionLocal() as db:
+                user = await db.get(User, user_id)
+                if user:
+                    user.gigaverse_last_run = datetime.now(timezone.utc)
+                    db.add(user)
+                    await db.commit()
+            logger.info(
+                "[gigaverse] Run complete for %s: moves=%d result=%s",
+                wallet[:10], result.get("moves", 0), status,
+            )
+        else:
+            logger.info("[gigaverse] Skipped run for %s (low energy)", wallet[:10])
+
+    except Exception as exc:
+        # Do NOT update last_run — let the scheduler retry next cycle
+        logger.error(
+            "[gigaverse] Run failed for %s: %s",
+            wallet[:10], exc,
+        )
+
+
+async def _gigaverse_tick() -> None:
+    """
+    Called every minute at :30 seconds.
+    For each user with a Gigaverse JWT, checks if a new run is due.
+
+    Run interval = 2 hours + deterministic per-user jitter (5–45 min).
+    The jitter seed changes daily so timing shifts every day — mimics human behaviour.
+    """
+    now = datetime.now(timezone.utc)
+    today_ordinal = now.toordinal()
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.gigaverse_jwt_enc.isnot(None))
+        )
+        users = result.scalars().all()
+
+    for user in users:
+        # Per-user deterministic daily jitter (5–45 minutes)
+        jitter_min = random.Random(
+            int(user.wallet_address, 16) ^ today_ordinal
+        ).randint(5, 45)
+        interval_seconds = (2 * 3600) + (jitter_min * 60)
+
+        if user.gigaverse_last_run is None:
+            # First ever run — add a small random initial delay (10–60 s)
+            # handled by asyncio.sleep inside _run_gigaverse; trigger immediately
+            asyncio.create_task(_run_gigaverse(user.id))
+            logger.info(
+                "[gigaverse] Scheduling first run for %s", user.wallet_address[:10]
+            )
+        else:
+            since_last = (
+                now - user.gigaverse_last_run.astimezone(timezone.utc)
+            ).total_seconds()
+            if since_last >= interval_seconds:
+                asyncio.create_task(_run_gigaverse(user.id))
+                logger.info(
+                    "[gigaverse] Scheduling run for %s (since_last=%.0fs interval=%ds)",
+                    user.wallet_address[:10], since_last, interval_seconds,
+                )

@@ -8,12 +8,13 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from db import init_db, get_db, User, VoteLog
-from crypto import encrypt_key
+from crypto import encrypt_key, encrypt_raw
 from auth import (
     generate_nonce, verify_signature, create_jwt,
     get_current_wallet, verify_admin_key,
@@ -25,6 +26,7 @@ from models import (
     RevokeResponse,
 )
 from queue_logic import current_epoch, generate_week_queue, get_app_id_for_today, WEEK_SIZE
+import gigaverse as gv
 from scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -280,3 +282,105 @@ async def admin_users(db: AsyncSession = Depends(get_db)):
     users = result.scalars().all()
     return [{"id": u.id, "wallet": u.wallet_address, "active": u.is_active,
              "streak": u.streak_days, "total": u.total_votes} for u in users]
+
+
+# ---------------------------------------------------------------------------
+# Gigaverse routes
+# ---------------------------------------------------------------------------
+
+class GigaverseConnectRequest(BaseModel):
+    """Payload sent from the frontend after the user signs the Gigaverse auth message."""
+    signature: str
+    message:   str
+    timestamp: int
+
+
+class GigaverseRegisterRequest(BaseModel):
+    """Fallback: manual JWT paste (kept for backwards compatibility)."""
+    gigaverse_token: str
+
+
+@app.post("/gigaverse/connect")
+async def gigaverse_connect(
+    req: GigaverseConnectRequest,
+    wallet: str = Depends(get_current_wallet),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Exchange a wallet signature for a Gigaverse JWT.
+
+    The frontend:
+    1. Gets Date.now() as timestamp
+    2. Signs the string "Login to Gigaverse at <timestamp>" with AGW
+    3. Sends {signature, message, timestamp} to this endpoint
+
+    We forward the signature to Gigaverse /user/auth, receive a JWT,
+    encrypt it with Fernet and persist it in the DB.
+    """
+    result = await db.execute(select(User).where(User.wallet_address == wallet))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Register with the upvote bot first before activating Gigaverse",
+        )
+
+    try:
+        auth_data = await gv.exchange_signature_for_jwt(
+            wallet_address=wallet,
+            signature=req.signature,
+            message=req.message,
+            timestamp=req.timestamp,
+        )
+    except Exception as exc:
+        logger.error("Gigaverse auth exchange failed for %s: %s", wallet[:10], exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Gigaverse authentication failed: {exc}",
+        )
+
+    user.gigaverse_jwt_enc          = encrypt_raw(auth_data["jwt"])
+    user.gigaverse_token_expires_at = auth_data["expires_at"]
+    await db.commit()
+    logger.info("Gigaverse JWT connected for %s (expires %s)", wallet[:10], auth_data["expires_at"])
+    return {"connected": True, "expires_at": auth_data["expires_at"]}
+
+
+@app.post("/gigaverse/register")
+async def gigaverse_register(
+    req: GigaverseRegisterRequest,
+    wallet: str = Depends(get_current_wallet),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Encrypt the Gigaverse JWT and persist it in the DB (manual / fallback).
+    Requires the wallet to be registered with the upvote bot first.
+    """
+    result = await db.execute(select(User).where(User.wallet_address == wallet))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Register with the upvote bot first before activating Gigaverse",
+        )
+    user.gigaverse_jwt_enc = encrypt_raw(req.gigaverse_token.strip())
+    await db.commit()
+    logger.info("Gigaverse JWT registered (manual) for %s", wallet[:10])
+    return {"registered": True}
+
+
+@app.get("/gigaverse/status")
+async def gigaverse_status(
+    wallet: str = Depends(get_current_wallet),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gigaverse bot status for the authenticated wallet."""
+    result = await db.execute(select(User).where(User.wallet_address == wallet))
+    user = result.scalar_one_or_none()
+    if not user:
+        return {"active": False, "last_run": None, "expires_at": None}
+    return {
+        "active": bool(user.gigaverse_jwt_enc),
+        "last_run": user.gigaverse_last_run,
+        "expires_at": user.gigaverse_token_expires_at,
+    }

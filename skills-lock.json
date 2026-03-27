@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "gigaverse": {
+      "source": "gigaverse-games/play",
+      "sourceType": "github",
+      "computedHash": "51c532ab2abc6027a904423792d6a8a8ef9c14b07574d2fe51c8fcd74d9e4943"
+    }
+  }
+}

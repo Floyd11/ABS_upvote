@@ -49,6 +49,12 @@ export default function Home() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
 
+  // Gigaverse bot state
+  const [gigaverseActive, setGigaverseActive] = useState(false);
+  const [gigaverseLoading, setGigaverseLoading] = useState(false);
+  const [gigaverseError, setGigaverseError] = useState<string | null>(null);
+  const [gigaverseExpiresAt, setGigaverseExpiresAt] = useState<string | null>(null);
+
   // Guard against double-execution of SIWE
   const siweRunning = useRef(false);
 
@@ -61,6 +67,7 @@ export default function Home() {
       setStep(3);
       fetchStatus(saved);
       fetchHistory(saved);
+      fetchGigaverseStatus(saved);
     }
   }, [isConnected]);
 
@@ -71,6 +78,10 @@ export default function Home() {
       setJwt(null);
       setSiweError(null);
       siweRunning.current = false;
+      // Reset Gigaverse state on disconnect
+      setGigaverseActive(false);
+      setGigaverseError(null);
+      setGigaverseExpiresAt(null);
     }
   }, [isConnected]);
 
@@ -151,6 +162,58 @@ export default function Home() {
       console.error("History fetch failed:", err);
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function fetchGigaverseStatus(token: string) {
+    try {
+      const resp = await fetch(`${BACKEND_URL}/gigaverse/status`, {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setGigaverseActive(data.active);
+        setGigaverseExpiresAt(data.expires_at ?? null);
+      }
+    } catch (err) {
+      console.error("Gigaverse status failed:", err);
+    }
+  }
+
+  async function handleGigaverseConnect() {
+    if (!jwt || !agwClient || !address) return;
+    setGigaverseLoading(true);
+    setGigaverseError(null);
+    try {
+      // 1. Build the exact message Gigaverse expects
+      const timestamp = Date.now();
+      const message = `Login to Gigaverse at ${timestamp}`;
+
+      // 2. Sign with the connected AGW wallet (no popup on Abstract)
+      const signature = await agwClient.signMessage({ message });
+
+      // 3. Exchange signature for JWT via our backend
+      const resp = await fetch(`${BACKEND_URL}/gigaverse/connect`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({ signature, message, timestamp }),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body?.detail ?? `Error ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      setGigaverseActive(true);
+      setGigaverseExpiresAt(data.expires_at ?? null);
+    } catch (err: any) {
+      setGigaverseError(err?.message ?? "Failed to connect Gigaverse");
+    } finally {
+      setGigaverseLoading(false);
     }
   }
 
@@ -346,6 +409,64 @@ export default function Home() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ⚔️ Gigaverse Bot card — only shown when authenticated (step 3) */}
+        {isConnected && step === 3 && (
+          <div className="card" style={{ marginTop: '1rem', padding: '2rem', gap: '1rem', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%' }}>
+              <h3 style={{ fontSize: '1rem', margin: 0 }}>⚔️ Gigaverse Bot</h3>
+              {gigaverseActive && (
+                <span style={{ fontSize: '0.75rem', color: '#00ff88', background: 'rgba(0,255,136,0.1)', padding: '2px 8px', borderRadius: '99px' }}>
+                  Active
+                </span>
+              )}
+            </div>
+
+            <p style={{ fontSize: '0.8rem', color: '#888', margin: 0, lineHeight: 1.5 }}>
+              Бот автоматически запускает данджи в Gigaverse каждые ~2 часа.
+              Вставь JWT токен из игры — он хранится в Local Storage на gigaverse.io.
+            </p>
+            <p style={{ fontSize: '0.75rem', color: '#555', margin: 0, lineHeight: 1.6 }}>
+              Нажми кнопку ниже — кошелёк подпишет сообщение автоматически.
+              Бот начнёт запускать данджи каждые ~2 часа.
+            </p>
+
+            {!gigaverseActive ? (
+              <>
+                {gigaverseError && (
+                  <p style={{ color: '#ff4f4f', fontSize: '0.8rem', margin: 0 }}>⚠️ {gigaverseError}</p>
+                )}
+                <button
+                  className="btn"
+                  id="gigaverse-connect-btn"
+                  onClick={handleGigaverseConnect}
+                  disabled={gigaverseLoading || !agwClient}
+                >
+                  {gigaverseLoading ? <div className="loader" /> : '⚔️ Войти в Gigaverse'}
+                </button>
+              </>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <div style={{ fontSize: '0.85rem', color: '#888' }}>
+                  ✓ Бот активен — данджи запускаются автоматически каждые ~2 часа
+                </div>
+                {gigaverseExpiresAt && (
+                  <div style={{ fontSize: '0.72rem', color: '#444' }}>
+                    Токен действителен до:{' '}
+                    {new Date(gigaverseExpiresAt).toLocaleString('ru-RU', { dateStyle: 'medium', timeStyle: 'short' })}
+                    {' · '}
+                    <button
+                      style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.72rem', padding: 0, textDecoration: 'underline' }}
+                      onClick={handleGigaverseConnect}
+                    >
+                      обновить
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

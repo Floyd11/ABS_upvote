@@ -36,3 +36,13 @@ def decrypt_key(encrypted: str) -> str:
     """
     clean = _get_fernet().decrypt(encrypted.encode()).decode()
     return "0x" + clean
+
+
+def encrypt_raw(value: str) -> str:
+    """Шифруем произвольную строку (напр. Gigaverse JWT)."""
+    return _get_fernet().encrypt(value.encode()).decode()
+
+
+def decrypt_raw(encrypted: str) -> str:
+    """Расшифровываем произвольную строку."""
+    return _get_fernet().decrypt(encrypted.encode()).decode()

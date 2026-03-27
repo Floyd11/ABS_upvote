@@ -73,6 +73,11 @@ class User(Base):
     week_app_ids: Mapped[List[int]] = mapped_column(ARRAY(Integer), default=list)
     week_app_index: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Gigaverse bot
+    gigaverse_jwt_enc:          Mapped[Optional[str]]      = mapped_column(String, nullable=True)
+    gigaverse_last_run:         Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    gigaverse_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Статистика
     last_voted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     streak_days: Mapped[int] = mapped_column(Integer, default=0)
