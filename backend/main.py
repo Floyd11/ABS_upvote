@@ -114,6 +114,7 @@ async def register(
         # Обновляем ключ (переподключение)
         existing.session_key_enc    = encrypt_key(req.session_key_enc.get_secret_value())
         existing.session_expires_at = req.session_expires_at
+        existing.session_config_json = req.session_config
         existing.voting_contract    = req.voting_contract or existing.voting_contract
         existing.is_active          = True
         existing.current_epoch      = epoch
@@ -125,6 +126,7 @@ async def register(
             wallet_address      = wallet,
             session_key_enc     = encrypt_key(req.session_key_enc.get_secret_value()),
             session_expires_at  = req.session_expires_at,
+            session_config_json = req.session_config,
             voting_contract     = req.voting_contract or settings.voting_contract,
             base_vote_second    = random.randint(0, 86399),
             current_epoch       = epoch,

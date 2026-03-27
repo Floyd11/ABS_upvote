@@ -27,6 +27,10 @@ export const VoteRequestSchema = z.object({
     .string()
     .regex(/^0x[0-9a-fA-F]{40}$/)
     .optional(),
+
+  // Сессионный конфиг (policies, signer, expiresAt)
+  // Необходим для корректной упаковки транзакции AGW SDK
+  sessionConfig: z.any(),
 });
 
 export type VoteRequest = z.infer<typeof VoteRequestSchema>;

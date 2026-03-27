@@ -134,6 +134,7 @@ export default function Home() {
         body: JSON.stringify({
           wallet_address: address,
           session_key_enc: sessionPrivateKey, // raw hex, encrypted on backend
+          session_config: session,            // session object from agwClient.createSession
           session_expires_at: new Date(Date.now() + 60 * 60 * 24 * 60 * 1000).toISOString(),
           voting_contract: VOTING_CONTRACT
         })

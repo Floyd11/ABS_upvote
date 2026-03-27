@@ -15,6 +15,7 @@ class RegisterRequest(BaseModel):
     wallet_address: str
     session_key_enc: SecretStr          # Маскируем в логах
     session_expires_at: Optional[datetime] = None
+    session_config: Optional[dict] = None # Конфиг сессии для AGW SDK
     voting_contract: Optional[str] = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A"
 
     @field_validator("wallet_address")

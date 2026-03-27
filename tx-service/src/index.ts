@@ -18,13 +18,13 @@
  */
 
 import express, { Request, Response } from "express";
-import { voteForApp } from "./voter";
+import { voteForApp } from "./voter.js";
 import { VoteRequest, VoteRequestSchema } from "./types";
 
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.TX_SERVICE_PORT ?? 3010;
+const PORT = Number(process.env.PORT) || 3010;
 const INTERNAL_SECRET = process.env.TX_SERVICE_SECRET ?? "";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,6 @@ app.post("/vote", async (req: Request, res: Response) => {
 // Start
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(`[tx-service] Listening on 127.0.0.1:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[tx-service] Listening on 0.0.0.0:${PORT}`);
 });

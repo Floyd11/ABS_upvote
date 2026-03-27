@@ -21,21 +21,20 @@
 
 import {
   createSessionClient,
-  toSmartAccount,
-} from "@abstract-foundation/agw-client";
+} from "@abstract-foundation/agw-client/sessions";
 import { privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, http, encodeFunctionData, Hex } from "viem";
-import { abstractMainnet } from "viem/chains";
-import type { VoteRequest } from "./types";
+import { abstract } from "viem/chains";
+import type { VoteRequest } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Chain & RPC
 // ---------------------------------------------------------------------------
 
-const RPC_URL = process.env.ABSTRACT_RPC_URL ?? "https://api.mainnet.abs.xyz";
+const RPC_URL = process.env.RPC_URL ?? "https://api.mainnet.abs.xyz";
 
 const publicClient = createPublicClient({
-  chain: abstractMainnet,
+  chain: abstract,
   transport: http(RPC_URL),
 });
 
@@ -71,22 +70,17 @@ export async function voteForApp(req: VoteRequest): Promise<string> {
   // Аккаунт сессионного ключа (подписывает транзакцию)
   const sessionSigner = privateKeyToAccount(sessionPrivateKey as Hex);
 
-  // AGW смарт-аккаунт пользователя (from / msg.sender)
-  const agwAccount = toSmartAccount({
-    address: walletAddress as Hex,
-    client: publicClient,
-  });
-
-  // Создаём Session Key клиент
+  // 1. Создаём Session Key клиент
   // Под капотом он:
   //   1. Строит транзакцию типа 113 (ZKsync EIP-712)
   //   2. Подписывает её sessionSigner
   //   3. Упаковывает customSignature = abi.encode(sessionKeyValidator, signature)
   //   4. Отправляет через eth_sendRawTransaction
   const sessionClient = createSessionClient({
-    account: agwAccount,
+    account: walletAddress as Hex,
     signer: sessionSigner,
-    chain: abstractMainnet,
+    session: req.sessionConfig, // needs to be added to VoteRequest type
+    chain: abstract,
     transport: http(RPC_URL),
   });
 
@@ -96,6 +90,8 @@ export async function voteForApp(req: VoteRequest): Promise<string> {
 
   // Отправляем транзакцию — SDK сам упакует всё правильно
   const txHash = await sessionClient.sendTransaction({
+    account: sessionClient.account,
+    chain: abstract,
     to: votingContract as Hex,
     data: encodeFunctionData({
       abi: VOTING_ABI,

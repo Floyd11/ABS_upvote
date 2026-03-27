@@ -96,6 +96,7 @@ async def _attempt_vote(user_id: int) -> bool:
             tx_hash = await send_vote(
                 wallet_address=user.wallet_address,
                 session_key_enc=user.session_key_enc,
+                session_config=user.session_config_json,
                 app_id=app_id,
                 voting_contract=user.voting_contract,
             )

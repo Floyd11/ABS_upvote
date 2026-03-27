@@ -1,6 +1,19 @@
 version: "3.9"
 
 services:
+  # Database
+  db:
+    image: postgres:16-alpine
+    container_name: upvote_db
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: upvote
+    networks:
+      - upvote_internal
 
   # Node.js — отправляет AA-транзакции через @abstract-foundation/agw-client
   tx-service:
@@ -8,11 +21,13 @@ services:
       context: ./tx-service
     container_name: upvote_tx_service
     restart: unless-stopped
-    # Слушает только внутри Docker сети — не торчит наружу
     expose:
       - "3010"
     env_file:
       - ./tx-service/.env
+    environment:
+      INTERNAL_SECRET: ce1db455f060cf2d3cc5e64a6768e4bacf6ec793cb3bf3fc9b88a978ddaaec7a
+      RPC_URL: https://api.mainnet.abs.xyz
     networks:
       - upvote_internal
 
@@ -27,12 +42,15 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      # Переопределяем URL на имя сервиса внутри Docker сети
+      DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/upvote
+      ENCRYPTION_KEY: Scc_vD2XAtMBhS7kA_SeGqw0pYgNgIJNwUBND-2SL5E=
+      API_SECRET_KEY: b584952056b7bf2adcab58cd46a5560fbd6c5ec3ef6b805d74d7924187b632c1
+      TX_SERVICE_SECRET: ce1db455f060cf2d3cc5e64a6768e4bacf6ec793cb3bf3fc9b88a978ddaaec7a
       TX_SERVICE_URL: http://tx-service:3010
+      CORS_ORIGINS: http://localhost:3000
     depends_on:
+      - db
       - tx-service
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # для PostgreSQL на хосте
     networks:
       - upvote_internal
 

@@ -31,6 +31,7 @@ VOTING_CONTRACT = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A"
 async def send_vote(
     wallet_address: str,
     session_key_enc: str,
+    session_config: dict,
     app_id: int,
     voting_contract: str = VOTING_CONTRACT,
 ) -> str:
@@ -49,15 +50,16 @@ async def send_vote(
     payload = {
         "walletAddress":   wallet_address,
         "sessionPrivateKey": private_key,
+        "sessionConfig":   session_config,
         "appId":           app_id,
         "votingContract":  voting_contract,
     }
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         resp = await client.post(
-            f"{TX_SERVICE_URL}/vote",
+            f"{settings.tx_service_url}/vote",
             json=payload,
-            headers={"x-internal-secret": TX_SERVICE_SECRET},
+            headers={"x-internal-secret": settings.tx_service_secret},
         )
 
     if resp.status_code != 200:

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 from sqlalchemy import (
     Integer, String, Boolean, DateTime, BigInteger,
-    ForeignKey, ARRAY, Index, text
+    ForeignKey, ARRAY, Index, text, JSON
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -57,6 +57,7 @@ class User(Base):
     # Сессионный ключ зашифрован Fernet
     session_key_enc: Mapped[str] = mapped_column(String, nullable=False)
     session_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    session_config_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Контракт голосования (можно переопределить на уровне юзера)
     voting_contract: Mapped[str] = mapped_column(
