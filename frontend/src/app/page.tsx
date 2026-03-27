@@ -11,7 +11,7 @@ import { LimitType } from "@abstract-foundation/agw-client/sessions";
 import { toFunctionSelector, Hex } from "viem";
 import { abstract } from "viem/chains";
 
-const BACKEND_URL = "http://localhost:8001";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8001";
 const VOTING_CONTRACT = "0x3B50dE27506f0a8C1f4122A1e6F470009a76ce2A";
 
 export default function Home() {
