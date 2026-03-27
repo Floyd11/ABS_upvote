@@ -21,11 +21,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://gigaverse.io/api"
-DUNGEON_ID = 1  # Dungetron 5000 — default dungeon
-ENERGY_COST = 40  # energy cost per Dungetron 5000 run
+ENERGY_COST = 40  # minimum energy required to start a run
 MAX_MOVES = 50   # hard cap — prevents infinite loops on unexpected states
 
-# Balanced rotation: Sword→Shield→Spell→Sword…
+# Known dungeon IDs
+DUNGEON_DUNGETRON = 1   # Dungetron: 5000 (main, always available)
+DUNGEON_UNDERHAUL = 2  # Underhaul (alternative)
+
+# Balanced combat rotation: Sword→Shield→Spell→…
 _COMBAT_MOVES = ["rock", "paper", "scissor"]
 
 
@@ -166,14 +169,26 @@ def _extract_pending_action(response: dict) -> str | None:
         return None
 
 
-async def run_dungeon(wallet_address: str, jwt: str) -> dict:
+async def run_dungeon(
+    wallet_address: str,
+    jwt: str,
+    dungeon_id: int = DUNGEON_DUNGETRON,
+    is_juiced: bool = False,
+) -> dict:
     """
     Execute one full dungeon run for the given player.
 
-    Returns a summary dict: {moves, result, wallet}.
+    Args:
+        dungeon_id:  1 = Dungetron 5000, 2 = Underhaul
+        is_juiced:   True = 3× energy cost but boosted rewards (requires active juice)
+
+    Returns a summary dict: {moves, result, wallet, dungeon_id, is_juiced}.
     Raises on non-recoverable errors (lost session, API errors, etc.).
     """
-    logger.info("[gigaverse] Starting run for %s", wallet_address[:10])
+    logger.info(
+        "[gigaverse] Starting run for %s  dungeon=%d  juiced=%s",
+        wallet_address[:10], dungeon_id, is_juiced,
+    )
 
     # Pre-flight energy check — skip run if not enough energy
     energy = await check_energy(wallet_address, jwt)
@@ -182,15 +197,18 @@ async def run_dungeon(wallet_address: str, jwt: str) -> dict:
             "[gigaverse] Not enough energy (%d/%d) for %s — skipping run",
             energy, ENERGY_COST, wallet_address[:10],
         )
-        return {"moves": 0, "result": "skipped_low_energy", "wallet": wallet_address[:10]}
+        return {
+            "moves": 0, "result": "skipped_low_energy",
+            "wallet": wallet_address[:10], "dungeon_id": dungeon_id, "is_juiced": is_juiced,
+        }
 
     async with httpx.AsyncClient(timeout=20) as client:
         # 1. Start the run — actionToken always begins at 0
         start_resp = await _dungeon_action(client, jwt, {
             "action": "start_run",
-            "dungeonId": DUNGEON_ID,
+            "dungeonId": dungeon_id,
             "actionToken": 0,
-            "data": {"consumables": [], "isJuiced": False, "index": 0},
+            "data": {"consumables": [], "isJuiced": is_juiced, "index": 0},
         })
 
         action_token = _extract_token(start_resp)
@@ -227,7 +245,7 @@ async def run_dungeon(wallet_address: str, jwt: str) -> dict:
                 move_idx += 1
                 payload = {
                     "action": action,
-                    "dungeonId": DUNGEON_ID,
+                    "dungeonId": dungeon_id,
                     "actionToken": action_token,
                     "data": {},
                 }
@@ -235,14 +253,14 @@ async def run_dungeon(wallet_address: str, jwt: str) -> dict:
                 # Always take loot option 1 (highest chance of rarity-first)
                 payload = {
                     "action": "loot_one",
-                    "dungeonId": DUNGEON_ID,
+                    "dungeonId": dungeon_id,
                     "actionToken": action_token,
                     "data": {},
                 }
             elif pending in {"heal_or_damage"}:
                 payload = {
                     "action": "heal_or_damage",
-                    "dungeonId": DUNGEON_ID,
+                    "dungeonId": dungeon_id,
                     "actionToken": action_token,
                     "data": {},
                 }
@@ -290,6 +308,9 @@ async def run_dungeon(wallet_address: str, jwt: str) -> dict:
                 MAX_MOVES, wallet_address[:10],
             )
 
-    result = {"moves": move_count, "result": final_status, "wallet": wallet_address[:10]}
+    result = {
+        "moves": move_count, "result": final_status,
+        "wallet": wallet_address[:10], "dungeon_id": dungeon_id, "is_juiced": is_juiced,
+    }
     logger.info("[gigaverse] Run complete: %s", result)
     return result

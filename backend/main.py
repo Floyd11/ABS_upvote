@@ -378,9 +378,42 @@ async def gigaverse_status(
     result = await db.execute(select(User).where(User.wallet_address == wallet))
     user = result.scalar_one_or_none()
     if not user:
-        return {"active": False, "last_run": None, "expires_at": None}
+        return {"active": False, "last_run": None, "expires_at": None, "dungeon_id": None, "is_juiced": False}
     return {
         "active": bool(user.gigaverse_jwt_enc),
         "last_run": user.gigaverse_last_run,
         "expires_at": user.gigaverse_token_expires_at,
+        "dungeon_id": user.gigaverse_dungeon_id,
+        "is_juiced": user.gigaverse_is_juiced,
     }
+
+
+class GigaverseDungeonRequest(BaseModel):
+    """Set the preferred dungeon for auto-play."""
+    dungeon_id: int   # 1 = Dungetron 5000, 2 = Underhaul
+    is_juiced: bool = False
+
+
+@app.post("/gigaverse/dungeon")
+async def gigaverse_set_dungeon(
+    req: GigaverseDungeonRequest,
+    wallet: str = Depends(get_current_wallet),
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist the player's dungeon preference."""
+    if req.dungeon_id not in (gv.DUNGEON_DUNGETRON, gv.DUNGEON_UNDERHAUL):
+        raise HTTPException(status_code=400, detail="Invalid dungeon_id. Use 1 or 2.")
+
+    result = await db.execute(select(User).where(User.wallet_address == wallet))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Connect Gigaverse first.")
+
+    user.gigaverse_dungeon_id = req.dungeon_id
+    user.gigaverse_is_juiced  = req.is_juiced
+    await db.commit()
+    logger.info(
+        "Gigaverse dungeon set to %d (juiced=%s) for %s",
+        req.dungeon_id, req.is_juiced, wallet[:10],
+    )
+    return {"dungeon_id": req.dungeon_id, "is_juiced": req.is_juiced}

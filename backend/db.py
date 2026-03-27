@@ -77,6 +77,8 @@ class User(Base):
     gigaverse_jwt_enc:          Mapped[Optional[str]]      = mapped_column(String, nullable=True)
     gigaverse_last_run:         Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     gigaverse_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    gigaverse_dungeon_id:       Mapped[int]                = mapped_column(Integer, default=1, server_default="1")
+    gigaverse_is_juiced:        Mapped[bool]               = mapped_column(Boolean, default=False, server_default="false")
 
     # Статистика
     last_voted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

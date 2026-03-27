@@ -54,6 +54,9 @@ export default function Home() {
   const [gigaverseLoading, setGigaverseLoading] = useState(false);
   const [gigaverseError, setGigaverseError] = useState<string | null>(null);
   const [gigaverseExpiresAt, setGigaverseExpiresAt] = useState<string | null>(null);
+  const [gigaverseDungeonId, setGigaverseDungeonId] = useState<number | null>(null);
+  const [gigaverseIsJuiced, setGigaverseIsJuiced] = useState(false);
+  const [dungeonLoading, setDungeonLoading] = useState(false);
 
   // Guard against double-execution of SIWE
   const siweRunning = useRef(false);
@@ -82,6 +85,8 @@ export default function Home() {
       setGigaverseActive(false);
       setGigaverseError(null);
       setGigaverseExpiresAt(null);
+      setGigaverseDungeonId(null);
+      setGigaverseIsJuiced(false);
     }
   }, [isConnected]);
 
@@ -174,9 +179,36 @@ export default function Home() {
         const data = await resp.json();
         setGigaverseActive(data.active);
         setGigaverseExpiresAt(data.expires_at ?? null);
+        setGigaverseDungeonId(data.dungeon_id ?? null);
+        setGigaverseIsJuiced(data.is_juiced ?? false);
       }
     } catch (err) {
       console.error("Gigaverse status failed:", err);
+    }
+  }
+
+  async function handleSelectDungeon(dungeonId: number, isJuiced: boolean) {
+    if (!jwt) return;
+    setDungeonLoading(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/gigaverse/dungeon`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({ dungeon_id: dungeonId, is_juiced: isJuiced }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body?.detail ?? `Error ${resp.status}`);
+      }
+      setGigaverseDungeonId(dungeonId);
+      setGigaverseIsJuiced(isJuiced);
+    } catch (err: any) {
+      setGigaverseError(err?.message ?? "Failed to set dungeon");
+    } finally {
+      setDungeonLoading(false);
     }
   }
 
@@ -426,45 +458,83 @@ export default function Home() {
 
             <p style={{ fontSize: '0.8rem', color: '#888', margin: 0, lineHeight: 1.5 }}>
               Бот автоматически запускает данджи в Gigaverse каждые ~2 часа.
-              Вставь JWT токен из игры — он хранится в Local Storage на gigaverse.io.
-            </p>
-            <p style={{ fontSize: '0.75rem', color: '#555', margin: 0, lineHeight: 1.6 }}>
-              Нажми кнопку ниже — кошелёк подпишет сообщение автоматически.
-              Бот начнёт запускать данджи каждые ~2 часа.
+              Войди через кошелёк — затем выбери подземелье.
             </p>
 
+            {/* --- Error banner --- */}
+            {gigaverseError && (
+              <p style={{ color: '#ff4f4f', fontSize: '0.8rem', margin: 0 }}>⚠️ {gigaverseError}</p>
+            )}
+
             {!gigaverseActive ? (
-              <>
-                {gigaverseError && (
-                  <p style={{ color: '#ff4f4f', fontSize: '0.8rem', margin: 0 }}>⚠️ {gigaverseError}</p>
-                )}
-                <button
-                  className="btn"
-                  id="gigaverse-connect-btn"
-                  onClick={handleGigaverseConnect}
-                  disabled={gigaverseLoading || !agwClient}
-                >
-                  {gigaverseLoading ? <div className="loader" /> : '⚔️ Войти в Gigaverse'}
-                </button>
-              </>
+              /* Not connected yet — show sign-in button */
+              <button
+                className="btn"
+                id="gigaverse-connect-btn"
+                onClick={handleGigaverseConnect}
+                disabled={gigaverseLoading || !agwClient}
+              >
+                {gigaverseLoading ? <div className="loader" /> : '⚔️ Войти в Gigaverse'}
+              </button>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                <div style={{ fontSize: '0.85rem', color: '#888' }}>
-                  ✓ Бот активен — данджи запускаются автоматически каждые ~2 часа
+              /* Connected — show dungeon selector */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {/* Status row */}
+                <div style={{ fontSize: '0.82rem', color: '#888', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>✓ Бот активен</span>
+                  {gigaverseExpiresAt && (
+                    <span style={{ fontSize: '0.7rem', color: '#444' }}>
+                      токен до {new Date(gigaverseExpiresAt).toLocaleDateString('ru-RU')}
+                      {' · '}
+                      <button
+                        style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.7rem', padding: 0, textDecoration: 'underline' }}
+                        onClick={handleGigaverseConnect}
+                      >
+                        обновить
+                      </button>
+                    </span>
+                  )}
                 </div>
-                {gigaverseExpiresAt && (
-                  <div style={{ fontSize: '0.72rem', color: '#444' }}>
-                    Токен действителен до:{' '}
-                    {new Date(gigaverseExpiresAt).toLocaleString('ru-RU', { dateStyle: 'medium', timeStyle: 'short' })}
-                    {' · '}
-                    <button
-                      style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.72rem', padding: 0, textDecoration: 'underline' }}
-                      onClick={handleGigaverseConnect}
-                    >
-                      обновить
-                    </button>
-                  </div>
-                )}
+
+                {/* Dungeon picker */}
+                <div style={{ fontSize: '0.75rem', color: '#555', marginBottom: '0.25rem' }}>
+                  Выбери подземелье:
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {([
+                    { id: 1, juiced: false, label: '🗡️ Dungetron: 5000',     desc: 'Основной данж · стандарт' },
+                    { id: 2, juiced: false, label: '🌑 Underhaul',            desc: 'Альтернативный данж' },
+                    { id: 1, juiced: true,  label: '⚡ Dungetron: Juiced',    desc: 'Dungetron × 3 награды (нужен Juice)' },
+                  ] as const).map(({ id, juiced, label, desc }) => {
+                    const isSelected = gigaverseDungeonId === id && gigaverseIsJuiced === juiced;
+                    return (
+                      <button
+                        key={`${id}-${juiced}`}
+                        id={`dungeon-btn-${id}-${juiced}`}
+                        onClick={() => handleSelectDungeon(id, juiced)}
+                        disabled={dungeonLoading}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.65rem 0.85rem',
+                          background: isSelected ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.02)',
+                          border: isSelected ? '1px solid #444' : '1px solid #222',
+                          borderRadius: '10px',
+                          color: isSelected ? '#fff' : '#666',
+                          cursor: dungeonLoading ? 'not-allowed' : 'pointer',
+                          transition: 'all 0.15s ease',
+                          textAlign: 'left',
+                          gap: '0.5rem',
+                        }}
+                      >
+                        <span style={{ fontSize: '0.82rem', fontWeight: isSelected ? 600 : 400 }}>{label}</span>
+                        <span style={{ fontSize: '0.68rem', color: isSelected ? '#888' : '#3a3a3a' }}>{desc}</span>
+                        {isSelected && <span style={{ fontSize: '0.65rem', color: '#5a5', marginLeft: 'auto', whiteSpace: 'nowrap' }}>● активен</span>}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

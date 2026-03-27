@@ -287,9 +287,11 @@ async def _run_gigaverse(user_id: int) -> None:
             return
         jwt = decrypt_raw(user.gigaverse_jwt_enc)
         wallet = user.wallet_address
+        dungeon_id = user.gigaverse_dungeon_id or gv.DUNGEON_DUNGETRON
+        is_juiced  = bool(user.gigaverse_is_juiced)
 
     try:
-        result = await gv.run_dungeon(wallet, jwt)
+        result = await gv.run_dungeon(wallet, jwt, dungeon_id=dungeon_id, is_juiced=is_juiced)
         status = result.get("result", "unknown")
 
         # Only advance last_run if the run actually executed (not skipped due to energy)
