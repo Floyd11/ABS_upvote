@@ -32,3 +32,11 @@ Thumbs.db
 # 6. НАСТРОЙКИ РЕДАКТОРОВ (Чтобы не перезаписывать настройки коллег)
 .idea/
 .vscode/
+
+# 7. PYTHON (Байткод и виртуальные окружения)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
